@@ -34,7 +34,7 @@ require 'sim_launcher'
 
 def reset_app_jail(sdk, app_path)
   app = File.basename(app_path)
-  bundle = `find "#{ENV['HOME']}/Library/Application Support/iPhone Simulator/#{sdk}/Applications/" -type d -depth 2 -name #{app} | head -n 1`
+  bundle = `find "#{ENV['HOME']}/Library/Application Support/iPhone Simulator/#{sdk}/Applications/" -type d -depth 2 -name "#{app}" | head -n 1`
   return if bundle.empty? # Assuming we're already clean
 
   sandbox = File.dirname(bundle)
@@ -43,7 +43,7 @@ def reset_app_jail(sdk, app_path)
   end
 end
 
-def relaunch
+def relaunch(args=nil)
   if ENV['NO_LAUNCH']!="1"
     sdk = ENV['SDK_VERSION'] || SimLauncher::SdkDetector.new().latest_sdk_version
     path = Calabash::Cucumber::SimulatorHelper.app_bundle_or_raise(app_path)
@@ -51,7 +51,7 @@ def relaunch
       reset_app_jail(sdk, path)
     end
 
-    Calabash::Cucumber::SimulatorHelper.relaunch(path,sdk,ENV['DEVICE'] || 'iphone')
+    Calabash::Cucumber::SimulatorHelper.relaunch(path,sdk,ENV['DEVICE'] || 'iphone', args)
   end
 end
 

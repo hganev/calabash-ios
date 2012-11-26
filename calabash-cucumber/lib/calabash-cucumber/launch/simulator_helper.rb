@@ -18,10 +18,10 @@ module Calabash
 
       DEFAULT_SIM_RETRY = 2
 
-      def self.relaunch(path, sdk = nil, version = 'iphone')
+      def self.relaunch(path, sdk = nil, version = 'iphone', args = nil)
 
         app_bundle_path = app_bundle_or_raise(path)
-        ensure_connectivity(app_bundle_path, sdk, version)
+        ensure_connectivity(app_bundle_path, sdk, version, args)
 
       end
 
@@ -169,7 +169,7 @@ module Calabash
         end
       end
 
-      def self.ensure_connectivity(app_bundle_path, sdk, version)
+      def self.ensure_connectivity(app_bundle_path, sdk, version, args = nil)
         begin
           max_retry_count = (ENV['MAX_CONNECT_RETRY'] || DEFAULT_SIM_RETRY).to_i
           timeout = (ENV['CONNECT_TIMEOUT'] || DEFAULT_SIM_WAIT).to_i
@@ -183,7 +183,7 @@ module Calabash
             puts "(#{retry_count}.) Start Simulator #{sdk}, #{version}, for #{app_bundle_path}"
             begin
               Timeout::timeout(timeout, TimeoutErr) do
-                simulator = launch(app_bundle_path, sdk, version)
+                simulator = launch(app_bundle_path, sdk, version, args)
                 until connected
                   begin
                     connected = (ping_app == '405')
@@ -195,6 +195,7 @@ module Calabash
                     if connected
                       server_version = get_version
                       if server_version
+                        p server_version
                         unless version_check(server_version)
                           msgs = ["You're running an older version of Calabash server with a newer client",
                                   "Client:#{Calabash::Cucumber::VERSION}",
@@ -220,7 +221,8 @@ module Calabash
               puts "Timed out..."
             end
           end
-        rescue
+        rescue e
+          p e
           msg = "Unable to make connection to Calabash Server at #{ENV['DEVICE_ENDPOINT']|| "http://localhost:37265/"}\n"
           msg << "Make sure you've' linked correctly with calabash.framework and set Other Linker Flags.\n"
           msg << "Make sure you don't have a firewall blocking traffic to #{ENV['DEVICE_ENDPOINT']|| "http://localhost:37265/"}.\n"
@@ -229,10 +231,10 @@ module Calabash
       end
 
 
-      def self.launch(app_bundle_path, sdk, version)
+      def self.launch(app_bundle_path, sdk, version, args = nil)
         simulator = SimLauncher::Simulator.new
         simulator.quit_simulator
-        simulator.launch_ios_app(app_bundle_path, sdk, version)
+        simulator.launch_ios_app(app_bundle_path, sdk, version) #, args wait for update to sim launcher
         simulator
       end
 
@@ -260,10 +262,28 @@ module Calabash
         puts "Fetch version #{url}..."
         begin
           body = Net::HTTP.get_response(url).body
-          return JSON.parse(body)
+          res = JSON.parse(body)
+          if res['iOS_version']
+            @ios_version = res['iOS_version']
+          end
+          res
         rescue
+          nil
         end
-        nil
+      end
+
+      def self.ios_version
+        unless @ios_version
+          get_version
+        end
+        @ios_version
+      end
+
+      def self.ios_major_version
+        v = ios_version
+        if v
+          v.split(".")[0]
+        end
       end
 
       def self.version_check(version)

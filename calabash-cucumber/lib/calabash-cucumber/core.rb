@@ -1,10 +1,13 @@
 require 'httpclient'
+require 'calabash-cucumber/launch/simulator_helper'
 
 module Calabash
   module Cucumber
     module Core
 
       DATA_PATH = File.expand_path(File.dirname(__FILE__))
+      CAL_HTTP_RETRY_COUNT=3
+      RETRYABLE_ERRORS = [Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::ECONNABORTED, Errno::ETIMEDOUT]
 
       def macro(txt)
         if self.respond_to? :step
@@ -266,14 +269,16 @@ module Calabash
         texts
       end
 
-      def load_playback_data(recording, options={})
-        os = options["OS"] || ENV["OS"] || "ios5"
-        device = options["DEVICE"] || ENV["DEVICE"] || "iphone"
-
-        rec_dir = ENV['PLAYBACK_DIR'] || "#{Dir.pwd}/playback"
-        if !recording.end_with? ".base64"
-          recording = "#{recording}_#{os}_#{device}.base64"
+      def recording_name_for(recording_name, os, device)
+        if !recording_name.end_with? ".base64"
+          "#{recording_name}_#{os}_#{device}.base64"
+        else
+          recording_name
         end
+      end
+
+
+      def load_recording(recording,rec_dir)
         data = nil
         if (File.exists?(recording))
           data = File.read(recording)
@@ -283,9 +288,45 @@ module Calabash
           data = File.read("#{rec_dir}/#{recording}")
         elsif (File.exists?("#{DATA_PATH}/resources/#{recording}"))
           data = File.read("#{DATA_PATH}/resources/#{recording}")
-        else
+        end
+        data
+      end
+
+      def load_playback_data(recording_name, options={})
+        os = options["OS"] || ENV["OS"]
+        device = options["DEVICE"] || ENV["DEVICE"] || "iphone"
+
+        unless os
+          major = Calabash::Cucumber::SimulatorHelper.ios_major_version
+          unless major
+            raise <<EOF
+          Unable to determine iOS major version
+          Most likely you have updated your calabash-cucumber client
+          but not your server. Please follow closely:
+
+https://github.com/calabash/calabash-ios/wiki/B1-Updating-your-Calabash-iOS-version
+
+          If you are running version 0.9.120+ then please report this message as a bug.
+EOF
+          end
+          os = "ios#{major}"
+        end
+
+        rec_dir = ENV['PLAYBACK_DIR'] || "#{Dir.pwd}/playback"
+
+        recording = recording_name_for(recording_name, os, device)
+        data = load_recording(recording,rec_dir)
+
+        if data.nil? and os=="ios6"
+          recording = recording_name_for(recording_name, "ios5", device)
+        end
+
+        data = load_recording(recording,rec_dir)
+
+        if data.nil?
           screenshot_and_raise "Playback not found: #{recording} (searched for #{recording} in #{Dir.pwd}, #{rec_dir}, #{DATA_PATH}/resources"
         end
+
         data
       end
 
@@ -336,8 +377,25 @@ module Calabash
         File.open("_recording.plist", 'wb') do |f|
           f.write res
         end
+
         device = ENV['DEVICE'] || 'iphone'
-        os = ENV['OS'] || 'ios5'
+        os = ENV['OS']
+
+        unless os
+          major = Calabash::Cucumber::SimulatorHelper.ios_major_version
+          unless major
+            raise <<EOF
+          Unable to determine iOS major version
+          Most likely you have updated your calabash-cucumber client
+          but not your server. Please follow closely:
+
+https://github.com/calabash/calabash-ios/wiki/B1-Updating-your-Calabash-iOS-version
+
+          If you are running version 0.9.120+ then please report this message as a bug.
+EOF
+          end
+          os = "ios#{major}"
+        end
 
         file_name = "#{file_name}_#{os}_#{device}.base64"
         system("/usr/bin/plutil -convert binary1 -o _recording_binary.plist _recording.plist")
@@ -359,6 +417,15 @@ module Calabash
         res['result']
       end
 
+      def calabash_exit
+        # Exiting the app shuts down the HTTP connection and generates ECONNREFUSED,
+        # which needs to be suppressed.
+        begin
+          http(:path => 'exit', :retryable_errors => RETRYABLE_ERRORS - [Errno::ECONNREFUSED])
+        rescue Errno::ECONNREFUSED
+          []
+        end
+      end
 
       def map(query, method_name, *method_args)
         operation_map = {
@@ -403,10 +470,9 @@ module Calabash
         url
       end
 
-      CAL_HTTP_RETRY_COUNT=3
-
       def make_http_request(options)
         body = nil
+        retryable_errors = options[:retryable_errors] || RETRYABLE_ERRORS
         CAL_HTTP_RETRY_COUNT.times do |count|
           begin
             if not @http
@@ -431,21 +497,20 @@ module Calabash
               raise e
             end
           rescue Exception => e
-            case e
-              when Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::ECONNABORTED, Errno::ETIMEDOUT
-                if count < CAL_HTTP_RETRY_COUNT-1
-                  sleep(0.5)
-                  @http.reset_all
-                  @http=nil
-                  STDOUT.write "Retrying.. #{e.class}: (#{e})\n"
-                  STDOUT.flush
+            if retryable_errors.include?(e)
+              if count < CAL_HTTP_RETRY_COUNT-1
+                sleep(0.5)
+                @http.reset_all
+                @http=nil
+                STDOUT.write "Retrying.. #{e.class}: (#{e})\n"
+                STDOUT.flush
 
-                else
-                  puts "Failing... #{e.class}"
-                  raise e
-                end
               else
+                puts "Failing... #{e.class}"
                 raise e
+              end
+            else
+              raise e
             end
           end
         end
