@@ -17,6 +17,24 @@ Then /^I (?:press|touch) "([^\"]*)"$/ do |name|
   sleep(STEP_PAUSE)
 end
 
+Then /^I (?:press|touch) "([^\"]*)" on number (\d+)$/ do |name, index|
+  index = index.to_i
+  screenshot_and_raise "Index should be positive (was: #{index})" if (index<=0)
+  cnt = 1
+  res = query("view marked:'#{name}'").empty?
+  while res do
+    swipe('up', {:query => "scrollView index:#{index-1}"})
+    res = query("view marked:'#{name}'").empty?
+    cnt = cnt + 1
+    if cnt >= 5 then
+      break
+    end
+  end
+  sleep(1.0)
+  touch("view marked:'#{name}'")      
+  sleep(STEP_PAUSE)
+end
+
 Then /^I (?:press|touch) (\d+)% right and (\d+)% down from "([^\"]*)" $/ do |x,y,name|
   raise "This step is not yet implemented on iOS"
 end
@@ -84,6 +102,22 @@ Then /^I enter "([^\"]*)" into the "([^\"]*)" (?:text|input) field$/ do |text_to
   sleep(STEP_PAUSE)
 end
 
+Then /^I type "([^\"]*)" into the "([^\"]*)" (?:text|input) field$/ do |text_to_type, field_name|
+  tap(field_name)
+  wait_for_elements_exist( ["keyboardAutomatic"] )
+  keyboard_enter_text(text_to_type)
+  sleep(STEP_PAUSE)
+end
+
+Then /^I type "([^\"]*)" into (?:input|text) field number (\d+)$/ do |text_to_type, index|
+    index = index.to_i
+    screenshot_and_raise "Index should be positive (was: #{index})" if (index<=0)    
+    touch("textField index:#{index-1}")
+    wait_for_elements_exist( ["keyboardAutomatic"] )
+    keyboard_enter_text(text_to_type)
+    sleep(STEP_PAUSE)
+end
+
 # alias
 Then /^I fill in "([^\"]*)" with "([^\"]*)"$/ do |text_field, text_to_type|
   macro %Q|I enter "#{text_to_type}" into the "#{text_field}" text field|
@@ -105,6 +139,12 @@ Then /^I enter "([^\"]*)" into (?:input|text) field number (\d+)$/ do |text, ind
   set_text("textField index:#{index-1}",text)
 end
 
+Then /^I enter "([^\"]*)" into text view number (\d+)$/ do |text, index|
+  index = index.to_i
+  screenshot_and_raise "Index should be positive (was: #{index})" if (index<=0)
+  set_text("textView index:#{index-1}",text)
+end
+    
 Then /^I use the native keyboard to enter "([^\"]*)" into (?:input|text) field number (\d+)$/ do |text, index|
   raise "Native keyboard entering is not yet implemented on iOS"
 end
@@ -383,3 +423,17 @@ end
 Then /^I should see (?:the)? user location$/ do
   check_element_exists("view:'MKUserLocationView'")
 end
+
+### Dismiss a dialog if it appears ###
+Then /^I (?:press|touch) "([^\"]*)" on the "([^\"]*)" dialog if it appears$/ do |text, dialog|
+    text = escape_quotes(text)
+    dialog = escape_quotes(dialog)
+    res = (element_exists( "view marked:'#{dialog}'" ) or
+           element_exists( "view text:'#{dialog}'"))
+    if res
+        touch("view marked:'#{text}'")
+    end
+    sleep(STEP_PAUSE)
+end
+
+
