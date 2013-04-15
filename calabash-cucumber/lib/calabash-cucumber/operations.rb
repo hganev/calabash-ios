@@ -3,6 +3,7 @@ require 'calabash-cucumber/tests_helpers'
 require 'calabash-cucumber/keyboard_helpers'
 require 'calabash-cucumber/wait_helpers'
 require 'calabash-cucumber/location'
+require 'calabash-cucumber/launcher'
 require 'net/http'
 require 'test/unit/assertions'
 require 'json'
@@ -97,7 +98,6 @@ module Calabash
 
         res['results'].first
       end
-
 
 
       #not officially supported yet

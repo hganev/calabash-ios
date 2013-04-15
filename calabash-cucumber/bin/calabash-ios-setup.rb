@@ -94,47 +94,9 @@ def download_calabash(project_path)
   ##Download calabash.framework
   if not File.directory?(File.join(project_path, file))
     msg("Info") do
-      zip_file = "calabash.framework-#{ENV['FRAMEWORK_VERSION']||Calabash::Cucumber::FRAMEWORK_VERSION}.zip"
-      puts "Did not find calabash.framework. I'll download it...'"
-      puts "http://cloud.github.com/downloads/calabash/calabash-ios/#{zip_file}"
-      require 'uri'
+      zip_file = File.join(@framework_dir,"calabash.framework.zip")
 
-      uri = URI.parse "http://cloud.github.com/downloads/calabash/calabash-ios/#{zip_file}"
-      success = false
-      if has_proxy?
-        proxy_url = proxy
-        connection = Net::HTTP::Proxy(proxy_url[0], proxy_url[1])
-      else
-        connection = Net::HTTP
-      end
-      begin
-      connection.start(uri.host, uri.port) do |http|
-        request = Net::HTTP::Get.new uri.request_uri
-
-        http.request request do |response|
-          if response.code == '200'
-            open zip_file, 'wb' do |io|
-              response.read_body do |chunk|
-                print "."
-                io.write chunk
-              end
-            end
-            success = true
-          else
-             puts "Got bad response code #{response.code}."
-             puts "Aborting..."
-          end
-        end
-      end
-      rescue SocketError => e
-        msg("Error") do
-          puts "Exception: #{e}"
-          puts "Unable to download Calabash. Please check connection."
-        end
-        exit 1
-      end
-      if success
-        puts "\nDownload done: #{file}. Unzipping..."
+      if File.exist?(zip_file)
         if not system("unzip -C -K -o -q -d #{project_path} #{zip_file} -x __MACOSX/* calabash.framework/.DS_Store")
           msg("Error") do
             puts "Unable to unzip file: #{zip_file}"
@@ -142,8 +104,8 @@ def download_calabash(project_path)
           end
           exit 1
         end
-        FileUtils.rm(zip_file)
       else
+        puts "Inconsistent gem state: Cannot find framework: #{zip_file}"
         exit 0
       end
     end
@@ -326,6 +288,52 @@ def validate_app(app)
     else
       puts "App: #{app} *does not contain* calabash.framework"
     end
+  end
+
+end
+
+
+def update(args)
+  if args.length > 0
+    target = args[0]
+    unless UPDATE_TARGETS.include?(target)
+      msg("Error") do
+        puts "Invalid target #{target}. Must be one of: #{UPDATE_TARGETS.join(' ')}"
+      end
+      exit 1
+    end
+
+
+
+    target_file = "features/support/launch.rb"
+    msg("Question") do
+      puts "I'm about to update the #{target_file} file."
+      puts "Please hit return to confirm that's what you want."
+    end
+    exit 2 unless STDIN.gets.chomp == ''
+
+
+    unless File.exist?(target_file)
+      msg("Error") do
+        puts "Unable to find file #{target_file}"
+        puts "Please change directory so that #{target_file} exists."
+      end
+      exit 1
+    end
+    new_launch_script = File.join(@script_dir,"launch.rb")
+
+    FileUtils.cp(new_launch_script, target_file, :verbose => true)
+
+    msg("Info") do
+      puts "File copied.\n"
+      puts "Launch on device using environment variable DEVICE_TARGET=device."
+    end
+  else
+    msg("Error") do
+      puts "update must take one of the following targets: #{UPDATE_TARGETS.join(' ')}"
+    end
+    exit 1
+
   end
 
 end
