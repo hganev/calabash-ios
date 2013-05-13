@@ -21,6 +21,10 @@ module Calabash
         map(uiquery, :query, *args)
       end
 
+      def flash(uiquery, *args)
+        map(uiquery, :flash, *args)
+      end
+
       def server_version
         JSON.parse(http(:path => 'version'))
       end
@@ -49,8 +53,10 @@ module Calabash
       end
 
       def query_all(uiquery, *args)
-        puts "query_all is deprecated. Use the new all/visible feature."
-        puts "see: https://github.com/calabash/calabash-ios/wiki/05-Query-syntax"
+        unless ENV['CALABASH_NO_DEPRECATION'] == '1'
+          puts "query_all is deprecated. Use the new all/visible feature."
+          puts "see: https://github.com/calabash/calabash-ios/wiki/05-Query-syntax"
+        end
         map("all #{uiquery}", :query, *args)
       end
 
@@ -352,9 +358,17 @@ EOF
 
         if data.nil? and os=="ios6"
           recording = recording_name_for(recording_name, "ios5", device)
+          data = load_recording(recording, rec_dir)
         end
 
-        data = load_recording(recording, rec_dir)
+        if data.nil? and device=='ipad'
+          if ENV['FULL_CONSOLE_OUTPUT'] == '1'
+            puts "Unable to find recording for #{os} and #{device}. Trying with #{os} iphone"
+          end
+          recording = recording_name_for(recording_name, os, 'iphone')
+          data = load_recording(recording, rec_dir)
+        end
+
 
         if data.nil?
           screenshot_and_raise "Playback not found: #{recording} (searched for #{recording} in #{Dir.pwd}, #{rec_dir}, #{DATA_PATH}/resources"
@@ -454,7 +468,7 @@ EOF
         # Exiting the app shuts down the HTTP connection and generates ECONNREFUSED,
         # which needs to be suppressed.
         begin
-          http(:path => 'exit', :retryable_errors => RETRYABLE_ERRORS - [Errno::ECONNREFUSED])
+          http({:method =>:post, :path => 'exit', :retryable_errors => RETRYABLE_ERRORS - [Errno::ECONNREFUSED]})
         rescue Errno::ECONNREFUSED
           []
         end
@@ -490,6 +504,10 @@ EOF
         if @calabash_launcher
            @calabash_launcher.stop
         end
+      end
+
+      def default_device
+        @calabash_launcher && @calabash_launcher.device
       end
 
       def send_uia_command(opts ={})
