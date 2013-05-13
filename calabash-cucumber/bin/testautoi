@@ -1,53 +1,84 @@
 #!/usr/bin/env ruby
 
+require 'zip/zip'
 require 'fileutils'
 require 'json'
 require 'tmpdir'
-require 'zip/zip'
 require 'uri'
+
+require File.join(File.dirname(__FILE__),"calabash-ios-sim")
+
+@script_dir = File.join(File.dirname(__FILE__), '..', 'scripts')
 
 @settings_file = File.join(FileUtils.pwd, ".testautoi_settings")
 
 def print_usage
   puts <<EOF
-  Usage: testautoi <command-name> [parameters] [options]
+  Usage: testautoi <command-name>
   <command-name> can be one of
     setup
       Set up test automation configurations
     run
       Start test automation
-    build
-      Build the intrumented app
+    build <Source Dir>
+      Build the instrumented app. 
+      Use getsource command first to download source to <Source Dir> 
+      Use 'sim build <Source Dir>' for Simulator
     install
       Install the app
+    install tools
+      Download and install tools from Subversion.
+      Tools for real iOS devices, not for Simulator.
+    uninstall
+      Uninstall the app
     launch
       Launch the app
     getip
       Get the device's IP address
     gen
       Generate the skeleton of features directory
-    runsim
+    sim start
       Start an iOS Simulator
+    sim quit
+      Quit the iOS Simulator
+    sim version [option]
+      One of version options: 5.0, 5.1, 6.0, and 6.1
+    sim device [option]
+      One of device options: iPad, iPad_Retina, iPhone, iPhone_Retina, iPhone_Retina_4inch 
+    sim pref [key] [value]
+      Keys:
+        KeyboardAutocorrection
+        KeyboardAutocapitalization
+      Values:
+        true
+        false
     devices
       List connected iOS Devices
-    getsource
-      Download app source
+    getsource list
+      List of source branches
+    getsource <Branch>
+      Download a branch of app source
+    getsouce trunk
+      Download the trunk of app source
     getbuild list
       List available builds in the build drop
     getbuild <Version>
       Download the build with <Version>.
+      Use 'sim getbuild <Version>' for Simulator
     getbuild trunk
       Download the trunk build
+      Use 'sim getbuild trunk' for Simulator
     getscript list
       List available scripts
     getscript <Script>
       Download the specified script
+    record start
+      Start recording
+    record stop
+      Stop recording
     version
       prints the gem version
 
-  <options> can be
-    -v, --verbose
-      Turns on verbose logging
 EOF
 end
 
@@ -55,19 +86,56 @@ def is_windows?
     (RUBY_PLATFORM =~ /mswin|mingw|cygwin/)
 end
 
+def get_ip_from_device_cfg
+    IO.read("Device.cfg").scan(/^IPAddress=(\S*)$/)[0][0]
+end
+
+def gen
+    STDOUT.sync = true
+    cmd = "calabash-ios gen"
+    result = system(cmd)
+    sleep(1)
+    result
+end
+
 def run(option)
     app_bundle = @settings["app_bundle"].to_s.strip
+    app_bundle_id = app_bundle_id(File.join(FileUtils.pwd, app_bundle))
+    app_url = app_bundle_url_schemes(File.join(FileUtils.pwd, app_bundle))
     device_ipaddr = @settings["device_ipaddr"].to_s.strip
     device_udid = @settings["device_udid"].to_s.strip
     STDOUT.sync = true
     arguments = ARGV
-    cmd = "cucumber #{arguments.join(" ")}"
+    if option == 'console'
+        cmd = "calabash-ios console"
+    else
+        cmd = "cucumber #{arguments.join(" ")}"
+    end
     env = {}
+    env['CALABASH_NO_DEPRECATION'] = '1'
     env["APP_BUNDLE_PATH"] =  File.join(FileUtils.pwd, app_bundle)
     if device_udid == ''
-        # Use Simulator
+        # Use a Simulator
+        #Calabash::Cucumber::SimulatorHelper.relaunch(env["APP_BUNDLE_PATH"], @settings["sim_version"], @settings["sim_device"])
+        #calabash_sim_location(['on', app_bundle_id])
+        if option == 'console'
+            Calabash::Cucumber::SimulatorHelper.relaunch(env["APP_BUNDLE_PATH"], @settings["sim_version"], @settings["sim_device"])
+        else
+            ENV["SDK_VERSION"] = @settings["sim_version"]
+            ENV["DEVICE"] = @settings["sim_device"]
+        end
     else
-        # Find IP address
+        env["NO_LAUNCH"] = "1"
+        get_device_ip
+        if ENV["CLEAN_INSTALL"] == "1"
+            uninstall_app(app_bundle_id)
+            install_app(File.join(FileUtils.pwd, app_bundle))
+        elsif ENV["NO_INSTALL"] != "1"
+            install_app(File.join(FileUtils.pwd, app_bundle))            
+        end
+        launch_app(app_url)
+        sleep(5)
+        device_ipaddr = get_ip_from_device_cfg
     end    
     if device_ipaddr != ''
         env["DEVICE_ENDPOINT"] = "http://#{device_ipaddr}:37265"
@@ -81,36 +149,24 @@ def setup
     read_settings
     puts "Settings for Test Automation"
 
-    ask_for_setting(:svn_location, "Please enter svn location of test source", @settings["svn_location"])
-    ask_for_setting(:svn_location_app, "Please enter svn location of app source", @settings["svn_location_app"])
-    ask_for_setting(:svn_username, "Please enter svn username", @settings["svn_username"])
-    ask_for_setting(:svn_password, "Please enter svn password", @settings["svn_password"])
+    ask_for_setting("svn_location", "Please enter svn location of test source", @settings["svn_location"])
+    ask_for_setting("svn_location_tools", "Please enter svn location of tools", @settings["svn_location_tools"])    
+    ask_for_setting("svn_location_app", "Please enter svn location of app source", @settings["svn_location_app"])
+    ask_for_setting("svn_username", "Please enter svn username", @settings["svn_username"])
+    ask_for_setting("svn_password", "Please enter svn password", @settings["svn_password"])
 
-    ask_for_setting(:build_drop_location, "Please enter build drop location", @settings["build_drop_location"])
-    ask_for_setting(:build_drop_username, "Please enter the username", @settings["build_drop_username"])
-    ask_for_setting(:build_drop_password, "Please enter the password", @settings["build_drop_password"])
+    ask_for_setting("build_drop_location", "Please enter build drop location", @settings["build_drop_location"])
+    ask_for_setting("build_drop_username", "Please enter the username", @settings["build_drop_username"])
+    ask_for_setting("build_drop_password", "Please enter the password", @settings["build_drop_password"])
   
-    ask_for_setting(:app_bundle, "Please enter the name of app bundle", @settings["app_bundle"])
-    ask_for_setting(:app_url, "Please enter the app URL scheme", @settings["app_url"])
-    ask_for_setting(:device_udid, "Please enter the unique device ID of the device", @settings["device_udid"])    
-    ask_for_setting(:device_ipaddr, "Please enter the IP address of the device", @settings["device_ipaddr"])
-    
-=begin
-    ask_for_setting(:ios_sdk, "Please enter the name of Android emulator", @settings["ios_sdk"] ||= )
-    puts "Available Targets:"
-    get_target_names.each{|i| puts "* #{i}" }
-    ask_for_setting(:avd_target, "Please enter the target of Android emulator", @settings["avd_target"] ||= "android-16")
-    puts "Available CPUs:"
-    get_abis(@settings["avd_target"]).each{|i| puts "* #{i}"}
-    ask_for_setting(:avd_cpu, "Please enter the CPU of Android emulator", @settings["avd_cpu"] ||= "armeabi-v7a")
-    ask_for_setting(:avd_sdcard_size, "Please enter the SD card size of Android emulator", @settings["avd_sdcard_size"] ||= "64M")
-    ask_for_setting(:avd_ram_size, "Please enter the RAM size of Android emulator", @settings["avd_ram_size"] ||= "1024")
-=end
+    ask_for_setting("app_bundle", "Please enter the name of app bundle", @settings["app_bundle"])
+    ask_for_setting("device_udid", "Please enter the unique device ID of the device", @settings["device_udid"])
 
-    ask_for_setting(:svn_app_location, "Please enter svn location of app source", @settings["svn_app_location"])
+    ask_for_setting("sim_version", "Please enter the version of the Simulator [5.0, 5.1, 6.0, 6.1]", @settings["sim_version"])
+    ask_for_setting("sim_device", "Please enter the device of the Simulator [iphone, ipad]", @settings["sim_device"])
 
-    @settings[:build_drop_branch_dir] = "Mobile/iPhone/branch"
-    @settings[:build_drop_trunk_dir] = "Mobile/iPhone/trunk"
+    @settings["build_drop_branch_dir"] = "Mobile/iPhone/branch/Corp"
+    @settings["build_drop_trunk_dir"] = "Mobile/iPhone/trunk/Corp"
     
     open(@settings_file, 'w') do |f|
         f.puts @settings.to_json
@@ -178,6 +234,12 @@ def smb_connect_mac(location,username,password)
     location = location.tr('\\','/')
     username = username.tr('\\',';').tr('/',';')
     raise "The build drop location is incorrect" if not location.start_with?("//")
+    paths = location.split('/')
+    if paths.size > 4
+        location = paths.shift(4).join('/')
+        @settings["build_drop_branch_dir"] = [paths.join('/'), @settings["build_drop_branch_dir"]].join('/')
+        @settings["build_drop_trunk_dir"] = [paths.join('/'), @settings["build_drop_trunk_dir"]].join('/')       
+    end
     cmd = "mount -t smbfs //'#{username}':#{password}@#{location[2..-1]}  #{mount_node}"
     output=`#{cmd}` ; result=$?.success?
     raise "the command '#{cmd}' failed" if result == false
@@ -208,16 +270,22 @@ def smb_disconnect(mount_node)
 end
 
 def unzip_file (file, destination)
+    filenames = []
     Zip::ZipFile.open(file) { |zip_file|
         zip_file.each { |f|
             f_path=File.join(destination, f.name)
+            FileUtils.rm_rf(f_path) if File.exist?(f_path)
             FileUtils.mkdir_p(File.dirname(f_path))
             zip_file.extract(f, f_path){ true }
+            filenames << f_path
         }
     }
+    filenames
 end
 
-def get_build
+def get_build(version, sim)
+    raise "Please configure build drop location, username, and password first by running setup" if @settings["build_drop_location"].to_s.empty? or @settings["build_drop_username"].to_s.empty? or @settings["build_drop_password"].to_s.empty?
+
     mount_node = smb_connect(@settings["build_drop_location"], 
                              @settings["build_drop_username"], 
                              @settings["build_drop_password"])
@@ -232,47 +300,49 @@ def get_build
         end
     else
         app_bundle = @settings["app_bundle"]
-        version = ARGV.shift
-        sim = (ARGV.shift == 'sim')?"Emulator":"Device"
+        sim = (sim == 'sim')?"Emulator":"Device"
         if version == 'trunk'
             # copy the trunk build
-            release_path = File.join(mount_node, @settings["build_drop_trunk_dir"], "ConcurMobile", sim)
+            release_path = File.join(mount_node, @settings["build_drop_trunk_dir"], "Instrumented", "ConcurMobile-cal", sim)
         else
             # copy the version build
-            release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "iPhone#{version}", "ConcurMobile", sim, "Release")
+            release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "iPhone#{version}", "Instrumented", "ConcurMobile-cal", sim)
         end
+        raise "No builds found in #{release_path}" unless File.directory?(release_path)
         build_dir = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
+        raise "No builds found in #{release_path}" if build_dir == nil
         zip_file = build_dir + ".zip"
         source = File.join(release_path, build_dir, zip_file)
         raise "the file '#{source}' does not exist" if not File.exists?(source)
         dest = File.join(FileUtils.pwd, zip_file)
         FileUtils.copy(source, dest)
         puts "Copy the build from #{source}"
-        FileUtils.rm_rf(File.join(FileUtils.pwd, (sim=='Emulator')?"Release-iphonesimulator":"Release-iphoneos"))
-        unzip_file(dest, FileUtils.pwd)
+        filenames = unzip_file(dest, FileUtils.pwd)
         FileUtils.rm_rf(File.join(FileUtils.pwd, app_bundle))
-        FileUtils.cp_r(File.join(FileUtils.pwd, (sim=='Emulator')?"Release-iphonesimulator":"Release-iphoneos", app_bundle), 
-                       FileUtils.pwd)
+        FileUtils.cp_r(filenames.find{|e| File.basename(e) == app_bundle}, FileUtils.pwd)
     end
 
     smb_disconnect(mount_node)
 end
 
 def get_script
+    svn_location = @settings["svn_location"]
+    svn_location += '/' unless svn_location.end_with?('/')
     username = @settings["svn_username"]
     password = @settings["svn_password"]
-    uri = URI.join(@settings["svn_location"], "Mobile/", "BVT/", "CTE/")
+    uri = URI.join(svn_location, "Mobile/", "BVT/", "CTE/")
 
     if ARGV.first == 'list'
         puts `svn list #{uri} --username #{username} --password #{password}`        
     else
-        feature = ARGV.first + (ARGV.first.end_with?('/')? '' : '/')
+        feature = ARGV.first
+        feature += '/' unless ARGV.first.end_with?('/')
         uri = URI.join(uri, feature)
         puts `svn export --force #{uri} features --username #{username} --password #{password}`
 
-        #uri = URI.join(@settings["svn_location"], "_support/", "support/")
-        #puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
-        uri = URI.join(@settings["svn_location"], "_support/", "step_definition/")
+        uri = URI.join(@settings["svn_location"], "_support/", "support/")
+        puts `svn export --force #{uri} features/support --username #{username} --password #{password}`
+        uri = URI.join(svn_location, "_support/", "step_definition/")
         puts `svn export --force #{uri} features/step_definitions --username #{username} --password #{password}`
     end
 end
@@ -291,34 +361,87 @@ def get_source
         ios_branches = output.scan(/^(iPhone\S*)$/)
         ios_branches.each {|i| puts i[0]}            
     else
+        # calabash_setup want Xcode to be closed.
+        res = `ps x -o pid,command | grep -v grep | grep Contents/MacOS/Xcode`
+        if res != ""
+            puts "Xcode is running. We'll be changing the project file so we'd better stop it."
+            puts "Please stop XCode and run setup again"
+            exit(0)
+        end
+
         branch = ARGV.first
         branch += '/' unless branch.end_with?('/')
         
         # remove the directory if it exists
         FileUtils.rm_rf(File.join(FileUtils.pwd, branch))
 
+        if branch == 'trunk/'
+            uri_iphone = URI.join(uri_base, "trunk/", "iPhone/")
+            uri_images = URI.join(uri_base, "trunk/", "images/")   
+        else
+            uri_iphone = URI.join(uri_base, "branches/", branch, "iPhone/")
+            uri_images = URI.join(uri_base, "branches/", branch, "images/")            
+        end
+        
         # get the source
-        uri = URI.join(uri_base, "branches/", branch, "iPhone/")
-        system("svn export --force #{uri} #{branch}iPhone --username #{username} --password #{password}")
-        uri = URI.join(uri_base, "branches/", branch, "images/")
-        system("svn export --force #{uri} #{branch}images --username #{username} --password #{password}")
+        system("svn export --force #{uri_iphone} #{branch}iPhone --username #{username} --password #{password}")
+        system("svn export --force #{uri_images} #{branch}images --username #{username} --password #{password}")
+        setup_target(branch)
     end
+end
+
+def setup_target(branch_dir)
+    system("echo ConcurMobile|calabash-ios setup #{branch_dir}/iPhone")
+end
+
+def fruitstrap_path
+    File.join(File.dirname(__FILE__), "fruitstrap")
+end
+
+def launcher_path
+    File.join(FileUtils.pwd, "tools", "AppLaunch", "AppLaunch.app")
+end
+
+def app_bundle_path
+    raise "No app bundle setting" if @settings["app_bundle"].to_s.empty?
+    File.join(FileUtils.pwd, @settings["app_bundle"])
+end
+
+def app_bundle_id(app_bundle)
+    plist = CFPropertyList::List.new(:file => File.join(app_bundle, "Info.plist"))
+    hash = CFPropertyList.native_types(plist.value)
+    hash["CFBundleIdentifier"]
+end
+
+def app_bundle_url_schemes(app_bundle)
+    plist = CFPropertyList::List.new(:file => File.join(app_bundle, "Info.plist"))
+    hash = CFPropertyList.native_types(plist.value)
+    hash['CFBundleURLTypes'][0]["CFBundleURLSchemes"][0] + ":"
 end
 
 def install_app(app_bundle)
-    installer = File.join(File.dirname(__FILE__), 'fruitstrap')
     udid = @settings["device_udid"].to_s.strip
     arg_udid = (udid == "" ? "" : "--id=#{udid}")
-    output = `#{installer} install #{arg_udid} -t 10 --bundle="#{app_bundle}"` ;  result=$?.success?
-    if result == false
-        puts output
-    end
+    result = system("#{fruitstrap_path} install #{arg_udid} -t 10 --bundle=#{app_bundle}")
+    raise "Failed to install the app" if result == false
 end
 
-def launch_app
-    launcher = File.join(FileUtils.pwd, 'AppLaunch.app')
-    app_bundle = File.join(FileUtils.pwd, @settings["app_bundle"])
-    app_url = @settings["app_url"]
+def uninstall_app(app_bundle_id)
+    udid = @settings["device_udid"].to_s.strip
+    arg_udid = (udid == "" ? "" : "--id=#{udid}")
+    result = system("#{fruitstrap_path} uninstall #{arg_udid} -t 10 --bundle-id=#{app_bundle_id}")
+    raise "Failed to install the app" if result == false
+end
+
+def tracetemplate
+    "/Applications/Xcode.app/Contents/Applications/Instruments.app/Contents/PlugIns/AutomationInstrument.bundle/Contents/Resources/Automation.tracetemplate"
+end
+
+def simulator_path
+    "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Applications/iPhone\\ Simulator.app/Contents/MacOS/iPhone\\ Simulator"
+end
+
+def launch_app(app_url)
     udid = @settings["device_udid"].to_s
     udids = Device.detect
     raise "No device is connected" if udids.length <= 0
@@ -327,19 +450,16 @@ def launch_app
         udid = udids.first
     end    
     raise "The device #{udid} is not found." if not udids.include?(udid)
-    tracetempl = "/Applications/Xcode.app/Contents/Applications/Instruments.app/Contents/PlugIns/AutomationInstrument.bundle/Contents/Resources/Automation.tracetemplate"
     launcher = "./AppLaunch.app"
     script = 'LaunchApp.js'
     text = File.read(File.join(File.dirname(__FILE__), script))
     File.open(File.join(FileUtils.pwd, script), "w") {|file| file.puts text.gsub(/\[%app%\]/, app_url)}
     script = File.join(FileUtils.pwd, script)
-    cmd = `instruments -w #{udid} -t #{tracetempl} #{launcher} -e UIASCRIPT #{script}`
+    cmd = `instruments -w #{udid} -t #{tracetemplate} #{launcher_path} -e UIASCRIPT #{script}`
 end
 
 def get_device_ip
-    launcher = File.join(FileUtils.pwd, 'AppLaunch.app')
-    app_bundle = File.join(FileUtils.pwd, @settings["app_bundle"])
-    app_url = @settings["app_url"]
+    app_url = app_bundle_url_schemes(app_bundle_path)
     udid = @settings["device_udid"].to_s
     udids = Device.detect
     raise "No device is connected" if udids.length <= 0
@@ -348,15 +468,71 @@ def get_device_ip
         udid = udids.first
     end    
     raise "The device #{udid} is not found." if not udids.include?(udid)
-    tracetempl = "/Applications/Xcode.app/Contents/Applications/Instruments.app/Contents/PlugIns/AutomationInstrument.bundle/Contents/Resources/Automation.tracetemplate"
     launcher = "./AppLaunch.app"
     script = 'GetIPAddress.js'
     text = File.read(File.join(File.dirname(__FILE__), script))
     File.open(File.join(FileUtils.pwd, script), "w") {|file| file.puts text}
     script = File.join(FileUtils.pwd, script)
     File.open(File.join(FileUtils.pwd, "Device.cfg"), "w") {|file| file.puts "IPAddress="}
-    cmd = `instruments -w #{udid} -t #{tracetempl} #{launcher} -e UIASCRIPT #{script}`
+    cmd = `instruments -w #{udid} -t #{tracetemplate} #{launcher_path} -e UIASCRIPT #{script}`
     puts File.read(File.join(FileUtils.pwd, "Device.cfg"))
+end
+
+def start_sim
+    quit_sim
+    pid = spawn(simulator_path)
+end
+
+def reset_sim
+    calabash_sim_reset
+end
+
+def sim_set_version(args)
+  quit_sim
+  options = ["5.0","5.1", "6.0", "6.1"]
+  if args.length != 1 or not options.find { |x| x == args[0] }
+    print_usage
+    puts "Unrecognized args: #{args}"
+    puts "should be one of #{options.inspect}"
+    exit(0)
+  end
+  path =File.join(File.expand_path("~/Library"), "Preferences", "com.apple.iphonesimulator.plist")
+  plist = CFPropertyList::List.new(:file => path)
+  hash = CFPropertyList.native_types(plist.value)
+
+  version = args.first
+  
+  if version
+    hash['currentSDKRoot'] = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator#{version}.sdk"
+    plist.value = CFPropertyList.guess(hash)
+    plist.save(path, CFPropertyList::List::FORMAT_BINARY)
+  end
+end
+
+def sim_set_device(device)
+    calabash_sim_device([device])
+end
+
+def sim_set_pref(key, value)
+    value_map = { "true" => true, "false" => false, "on" => true, "off" => false }
+    value = value_map[value]
+    pref_files = Dir.glob(File.join(File.expand_path("~/Library"), "Application Support", "iPhone Simulator", "*.*", "Library", "Preferences", "com.apple.Preferences.plist"))
+    pref_files.each do |pref_file|
+        plist = CFPropertyList::List.new(:file => pref_file)
+        hash = CFPropertyList.native_types(plist.value)
+        if value == nil
+            puts "<#{pref_file}> #{key}=#{hash[key]}"
+        else
+            puts "<#{pref_file}> #{key}=#{hash[key]} => #{value}"
+            hash[key] = value
+            plist.value = CFPropertyList.guess(hash)
+            plist.save(pref_file, CFPropertyList::List::FORMAT_BINARY)
+        end
+    end
+end
+
+def sim_add_photo(file)
+    
 end
 
 class Device
@@ -405,14 +581,52 @@ def device_info(udid)
     puts "WiFi Address: #{device.wifi_address}"    
 end
 
-def build_app
-    config = "Debug"
-    target = "AppLaunch"
-    arch = "armv7"
-    sdk = "iphoneos6.1"
-    cmd = "xcodebuild -configuration #{config} -target #{target} -arch #{arch} -sdk #{sdk}"
+def build_app(branch_dir,sim)
+    if sim == 'sim'
+        sdk = "iphonesimulator"
+    else
+        sdk = "iphoneos"
+    end
+    project = File.join(FileUtils.pwd, branch_dir, "iPhone", "ConcurMobile.xcodeproj")
+    target = "ConcurMobile-cal"
+    configuration = "Release"
+    system("/usr/bin/xcodebuild -project #{project} -target #{target} -configuration #{configuration} -sdk #{sdk} clean build")
+    app_bundle = @settings["app_bundle"]
+    source = File.join(FileUtils.pwd, branch_dir, "iPhone", "build", "#{configuration}-#{sdk}", app_bundle)
+    target = File.join(FileUtils.pwd, app_bundle)
+    FileUtils.rm_rf(target)
+    FileUtils.cp_r(source, target)
 end
 
+def install_tools
+    raise "Please configure Subversion location for tools, username, and password first by running setup" if @settings["svn_location_tools"].to_s.empty? or @settings["svn_username"].to_s.empty? or @settings["svn_password"].to_s.empty?
+
+    location = @settings["svn_location_tools"]
+    location += '/' unless location.end_with?('/')    
+    username = @settings["svn_username"]
+    password = @settings["svn_password"]
+    
+    # delete tools directory
+    FileUtils.rm_rf(File.join(FileUtils.pwd, "tools"))
+
+    system("svn export --force #{location} tools/ --username #{username} --password #{password}")
+    tools = `svn list #{location} -R --username #{username} --password #{password}`.split(/\n/).select{|i| i.end_with?('.zip')}
+    tools.each do |tool|
+        tool_zip = File.join(FileUtils.pwd, "tools", tool)
+        unzip_file(tool_zip, File.dirname(tool_zip))
+        tool_app = tool_zip.chomp(File.extname(tool_zip)) + ".app"
+        puts "Installing #{tool_app}"
+        install_app(tool_app)
+    end
+end
+
+def record_start
+    launch_app('concurrecorder://record')
+end
+
+def record_stop
+    launch_app('concurrecorder://stop') 
+end
 
 if (ARGV.length == 0)
     print_usage
@@ -433,7 +647,9 @@ elsif cmd == 'getbuild'
     read_settings
     File.open("#{Dir.tmpdir}/testauto.lock", 'w') { |f|
         f.flock(File::LOCK_EX)
-        get_build
+        version = ARGV.shift
+        sim = ARGV.shift
+        get_build(version, sim)
     }
     exit 0
 
@@ -449,17 +665,21 @@ elsif cmd == 'getsource'
 
 elsif cmd == 'install'
     read_settings 
-    app_bundle = ARGV.shift
-    if app_bundle == 'applaunch'
-        install_app(File.join(FileUtils.pwd, "AppLaunch.app"))
+    option = ARGV.shift
+    if option == 'tools'
+        install_tools
     else
-        install_app(File.join(FileUtils.pwd, @settings["app_bundle"]))
+        install_app(app_bundle_path)
     end
     exit 0
 
+elsif cmd == 'uninstall'
+    read_settings
+    uninstall_app(app_bundle_id(app_bundle_path))
+
 elsif cmd == 'launch'
     read_settings    
-    launch_app
+    launch_app(app_bundle_url_schemes(app_bundle_path))
     exit 0
 
 elsif cmd == 'getip'
@@ -471,42 +691,57 @@ elsif cmd == 'devices'
     list_devices
     exit 0
 
-elsif cmd == 'list'
+elsif cmd == 'sim'
     option = ARGV.shift
-    if option == 'target'
-        list_target
-    elsif option == 'avd'
-        list_avd
+    read_settings
+    if option == 'start'
+        start_sim
+    elsif option == 'quit'
+        quit_sim
+    elsif option == 'device'
+        sim_set_device(ARGV.shift)
+    elsif option == 'version'
+        sim_set_version([ARGV.shift])
+    elsif option == 'pref'
+        key = ARGV.shift
+        value = ARGV.shift
+        sim_set_pref(key, value)
+    elsif option == 'build'
+        branch_dir = ARGV.shift
+        build_app(branch_dir, 'sim')
+    elsif option == 'getbuild'
+        version = ARGV.shift
+        get_build(version, 'sim')
+    elsif option == 'add'
+        file = ARGV.shift
+        sim_add_photo(file)        
     end
-    exit 0
-
-elsif cmd == 'createavd'
-    read_settings
-    create_avd
-    exit 0
-
-elsif cmd == 'runavd'
-    read_settings
-    run_avd
     exit 0
 
 elsif cmd == 'run' or cmd == 'console'
     read_settings
     run(cmd)
-    
-elsif cmd == 'resign'
-    read_settings
-    resign
 
 elsif cmd == 'build'
     read_settings
-    build
+    branch_dir = ARGV.shift
+    sim = ARGV.shift
+    build_app(branch_dir, sim)
 
 elsif cmd == 'gen'
     gen
 
 elsif cmd == 'go'
     go
+    
+elsif cmd == 'record'
+    read_settings
+    option = ARGV.shift
+    if option == 'start'
+        record_start
+    elsif option == 'stop'
+        record_stop
+    end
     
 elsif cmd == 'version'
     require 'calabash-cucumber'
