@@ -25,7 +25,7 @@ class Calabash::Cucumber::Launcher
   end
 
   def device_target?
-    ENV['DEVICE_TARGET'] == 'device'
+    (ENV['DEVICE_TARGET'] != nil) && (not simulator_target?)
   end
 
   def simulator_target?
@@ -68,6 +68,10 @@ class Calabash::Cucumber::Launcher
 
     if device_target?
       default_args = {:app => ENV['BUNDLE_ID']}
+      target = ENV['DEVICE_TARGET']
+      if target != 'DEVICE'
+        default_args[:udid] = target
+      end
       self.run_loop = RunLoop.run(default_args.merge(args))
     else
 
@@ -119,7 +123,7 @@ class Calabash::Cucumber::Launcher
           puts "Timed out...Retry.."
         end
       end
-    rescue e
+    rescue RuntimeError => e
       p e
       msg = "Unable to make connection to Calabash Server at #{ENV['DEVICE_ENDPOINT']|| "http://localhost:37265/"}\n"
       msg << "Make sure you don't have a firewall blocking traffic to #{ENV['DEVICE_ENDPOINT']|| "http://localhost:37265/"}.\n"
@@ -132,7 +136,7 @@ class Calabash::Cucumber::Launcher
 
     http = Net::HTTP.new(url.host, url.port)
     res = http.start do |sess|
-      sess.request Net::HTTP::Get.new "version"
+      sess.request Net::HTTP::Get.new(ENV['CALABASH_VERSION_PATH'] || "version")
     end
     status = res.code
     begin

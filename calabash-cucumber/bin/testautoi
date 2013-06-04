@@ -120,11 +120,24 @@ def run(option)
         #calabash_sim_location(['on', app_bundle_id])
         if option == 'console'
             Calabash::Cucumber::SimulatorHelper.relaunch(env["APP_BUNDLE_PATH"], @settings["sim_version"], @settings["sim_device"])
-        else
-            ENV["SDK_VERSION"] = @settings["sim_version"]
-            ENV["DEVICE"] = @settings["sim_device"]
         end
+        # For Calabash
+        env["DEVICE"] = @settings["sim_device"]
+        env["SDK_VERSION"] = @settings["sim_version"]
+        # For Test Automation
+        env["DEVICE_ID"] = ""
+        env["DEVICE_CLASS"] = @settings["sim_device"]                
+        env["DEVICE_VERSION"] = ENV["SDK_VERSION"]
+        env["DEVICE_TYPE"] = @settings["sim_device"]
+        env["DEVICE_SN"] = ""
     else
+        # Use a device
+        dev = Device.new(device_udid)
+        env["DEVICE_ID"] = device_udid
+        env["DEVICE_CLASS"] = dev.device_class
+        env["DEVICE_VERSION"] = dev.product_version
+        env["DEVICE_TYPE"] = dev.product_type
+        env["DEVICE_SN"] = dev.serial_number
         env["NO_LAUNCH"] = "1"
         get_device_ip
         if ENV["CLEAN_INSTALL"] == "1"
@@ -289,11 +302,11 @@ def get_build(version, sim)
     mount_node = smb_connect(@settings["build_drop_location"], 
                              @settings["build_drop_username"], 
                              @settings["build_drop_password"])
-    if ARGV.first == 'list'
+    if version == 'list'
         # list build versions
         branch_path = File.join(mount_node, @settings["build_drop_branch_dir"])
         Dir.entries(branch_path).sort_by{|c| File.stat(File.join(branch_path,c)).ctime}.each do |d|
-            m = d.match(/^iPhone(\S+)$/)
+            m = d.match(/^(?:iPhone|iOSCorp)(\S+)$/)
             if m != nil
                 puts m[1]
             end
@@ -307,6 +320,9 @@ def get_build(version, sim)
         else
             # copy the version build
             release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "iPhone#{version}", "Instrumented", "ConcurMobile-cal", sim)
+            if not File.directory?(release_path)
+                release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "iOSCorp#{version}", "Instrumented", "ConcurMobile-cal", sim)
+            end
         end
         raise "No builds found in #{release_path}" unless File.directory?(release_path)
         build_dir = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
@@ -689,6 +705,15 @@ elsif cmd == 'getip'
             
 elsif cmd == 'devices'
     list_devices
+    exit 0
+
+elsif cmd == 'device'
+    read_settings
+    option = ARGV.shift
+    if option == 'info'
+        udid = @settings["device_udid"].to_s
+        device_info(udid) if udid != ''
+    end
     exit 0
 
 elsif cmd == 'sim'

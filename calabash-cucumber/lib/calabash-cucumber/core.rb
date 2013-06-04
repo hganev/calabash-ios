@@ -7,7 +7,10 @@ module Calabash
 
       DATA_PATH = File.expand_path(File.dirname(__FILE__))
       CAL_HTTP_RETRY_COUNT=3
-      RETRYABLE_ERRORS = [Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::ECONNABORTED, Errno::ETIMEDOUT]
+      RETRYABLE_ERRORS = [HTTPClient::TimeoutError,
+                          HTTPClient::KeepAliveDisconnected,
+                          Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::ECONNABORTED,
+                          Errno::ETIMEDOUT]
 
       def macro(txt)
         if self.respond_to? :step
@@ -183,6 +186,31 @@ module Calabash
 
         if views_touched.empty? or views_touched.member? "<VOID>"
           screenshot_and_raise "Unable to scroll: '#{uiquery}' to: #{options}"
+        end
+        views_touched
+      end
+
+
+      def scroll_to_row_with_mark(row_id, options={:query => 'tableView',
+                                                   :scroll_position => :middle,
+                                                   :animate => true})
+        uiquery = options[:query] || 'tableView'
+
+        args = []
+        if options.has_key?(:scroll_position)
+          args << options[:scroll_position]
+        else
+          args << 'middle'
+        end
+        if options.has_key?(:animate)
+          args << options[:animate]
+        end
+
+        views_touched=map(uiquery, :scrollToRowWithMark, row_id, *args)
+
+        if views_touched.empty? or views_touched.member? '<VOID>'
+          msg = options[:failed_message] || "Unable to scroll: '#{uiquery}' to: #{options}"
+          screenshot_and_raise msg
         end
         views_touched
       end
@@ -466,10 +494,11 @@ EOF
 
       def calabash_exit
         # Exiting the app shuts down the HTTP connection and generates ECONNREFUSED,
+        # or HTTPClient::KeepAliveDisconnected
         # which needs to be suppressed.
         begin
-          http({:method =>:post, :path => 'exit', :retryable_errors => RETRYABLE_ERRORS - [Errno::ECONNREFUSED]})
-        rescue Errno::ECONNREFUSED
+          http({:method =>:post, :path => 'exit', :retryable_errors => RETRYABLE_ERRORS - [Errno::ECONNREFUSED,HTTPClient::KeepAliveDisconnected]})
+        rescue Errno::ECONNREFUSED, HTTPClient::KeepAliveDisconnected
           []
         end
       end
@@ -548,6 +577,7 @@ EOF
       end
 
       def make_http_request(options)
+
         body = nil
         retryable_errors = options[:retryable_errors] || RETRYABLE_ERRORS
         CAL_HTTP_RETRY_COUNT.times do |count|
@@ -561,29 +591,20 @@ EOF
               body = @http.get(options[:uri], options[:body]).body
             end
             break
-          rescue HTTPClient::TimeoutError, HTTPClient::KeepAliveDisconnected => e
-            if count < CAL_HTTP_RETRY_COUNT-1
-              @http.reset_all
-              @http=nil
-              STDOUT.write "Waiting 5 secs before retry...\n"
-              sleep(5)
-              STDOUT.write "Retrying.. #{e.class}: (#{e})\n"
-              STDOUT.flush
-
-            else
-              puts "Failing... #{e.class}"
-              raise e
-            end
-
           rescue Exception => e
-            if retryable_errors.include?(e)
+
+            if retryable_errors.include?(e) || retryable_errors.any?{|c| e.is_a?(c)}
+
               if count < CAL_HTTP_RETRY_COUNT-1
-                sleep(0.5)
+                if e.is_a?(HTTPClient::TimeoutError)
+                  sleep(3)
+                else
+                  sleep(0.5)
+                end
                 @http.reset_all
                 @http=nil
                 STDOUT.write "Retrying.. #{e.class}: (#{e})\n"
                 STDOUT.flush
-
               else
                 puts "Failing... #{e.class}"
                 raise e
