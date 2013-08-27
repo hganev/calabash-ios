@@ -76,6 +76,8 @@ def print_usage
       Start recording
     record stop
       Stop recording
+    uia <Script>
+      Run a UIA script
     version
       prints the gem version
 
@@ -114,6 +116,8 @@ def run(option)
     env = {}
     env['CALABASH_NO_DEPRECATION'] = '1'
     env["APP_BUNDLE_PATH"] =  File.join(FileUtils.pwd, app_bundle)
+    env["APP_NAME"] = app_bundle_name(env["APP_BUNDLE_PATH"])    
+    env["APP_VERSION"] = app_bundle_version(env["APP_BUNDLE_PATH"])
     if device_udid == ''
         # Use a Simulator
         #Calabash::Cucumber::SimulatorHelper.relaunch(env["APP_BUNDLE_PATH"], @settings["sim_version"], @settings["sim_device"])
@@ -152,6 +156,9 @@ def run(option)
     end    
     if device_ipaddr != ''
         env["DEVICE_ENDPOINT"] = "http://#{device_ipaddr}:37265"
+    end
+    if File.exists?(File.join(FileUtils.pwd, "build_drop_dir.txt"))
+        env["BUILD_DROP_DIR"] = IO.read(File.join(FileUtils.pwd, "build_drop_dir.txt"))
     end
     result = system(env, cmd)
     sleep(1)
@@ -312,27 +319,52 @@ def get_build(version, sim)
             end
         end
     else
+        home_path = ENV['HOME'] || ENV['HOMEPATH']
         app_bundle = @settings["app_bundle"]
         sim = (sim == 'sim')?"Emulator":"Device"
         if version == 'trunk'
             # copy the trunk build
             release_path = File.join(mount_node, @settings["build_drop_trunk_dir"], "Instrumented", "ConcurMobile-cal", sim)
+            cache_path = File.join(home_path, @settings["build_drop_trunk_dir"], "Instrumented", "ConcurMobile-cal", sim)
         else
             # copy the version build
             release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "iPhone#{version}", "Instrumented", "ConcurMobile-cal", sim)
+            cache_path = File.join(home_path, @settings["build_drop_branch_dir"], "iPhone#{version}", "Instrumented", "ConcurMobile-cal", sim)
             if not File.directory?(release_path)
                 release_path = File.join(mount_node, @settings["build_drop_branch_dir"], "iOSCorp#{version}", "Instrumented", "ConcurMobile-cal", sim)
+                cache_path = File.join(home_path, @settings["build_drop_branch_dir"], "iOSCorp#{version}", "Instrumented", "ConcurMobile-cal", sim)
             end
         end
         raise "No builds found in #{release_path}" unless File.directory?(release_path)
-        build_dir = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}.last 
+        
+        build_dirs = Dir.entries(release_path).reject{|d|d.start_with?('.')}.sort_by{|c| File.stat(File.join(release_path,c)).ctime}
+        
+        build_dir = nil
+        zip_file = nil
+        begin
+            raise "No builds found in #{release_path}" if build_dirs.size == 0
+            if File.exists?(File.join(release_path, build_dirs.last, build_dirs.last + ".zip"))
+                build_dir = build_dirs.last
+                zip_file = build_dir + ".zip"
+            else
+                build_dirs.pop 
+            end
+        end while build_dir == nil
+        
         raise "No builds found in #{release_path}" if build_dir == nil
-        zip_file = build_dir + ".zip"
-        source = File.join(release_path, build_dir, zip_file)
+        
+        source = File.join(cache_path, build_dir, zip_file)
+        if not File.exists?(source)
+            release_source = File.join(release_path, build_dir, zip_file)
+            FileUtils.mkdir_p(File.dirname(source))
+            FileUtils.copy(release_source, source)
+            puts "Copy the build from #{release_source} to #{source}"            
+        end
         raise "the file '#{source}' does not exist" if not File.exists?(source)
         dest = File.join(FileUtils.pwd, zip_file)
         FileUtils.copy(source, dest)
         puts "Copy the build from #{source}"
+        File.open(File.join(FileUtils.pwd, "build_drop_dir.txt"), 'w') {|f| f.write(build_dir) }   
         filenames = unzip_file(dest, FileUtils.pwd)
         FileUtils.rm_rf(File.join(FileUtils.pwd, app_bundle))
         FileUtils.cp_r(filenames.find{|e| File.basename(e) == app_bundle}, FileUtils.pwd)
@@ -341,18 +373,18 @@ def get_build(version, sim)
     smb_disconnect(mount_node)
 end
 
-def get_script
+def get_script(name)
     svn_location = @settings["svn_location"]
     svn_location += '/' unless svn_location.end_with?('/')
     username = @settings["svn_username"]
     password = @settings["svn_password"]
     uri = URI.join(svn_location, "Mobile/", "BVT/", "CTE/")
 
-    if ARGV.first == 'list'
+    if name == 'list'
         puts `svn list #{uri} --username #{username} --password #{password}`        
     else
-        feature = ARGV.first
-        feature += '/' unless ARGV.first.end_with?('/')
+        feature = name
+        feature += '/' unless name.end_with?('/')
         uri = URI.join(uri, feature)
         puts `svn export --force #{uri} features --username #{username} --password #{password}`
 
@@ -423,6 +455,19 @@ def app_bundle_path
     File.join(FileUtils.pwd, @settings["app_bundle"])
 end
 
+def app_bundle_name(app_bundle)
+    plist = CFPropertyList::List.new(:file => File.join(app_bundle, "Info.plist"))
+    hash = CFPropertyList.native_types(plist.value)
+    hash["CFBundleName"]
+end
+
+def app_bundle_version(app_bundle)
+    plist = CFPropertyList::List.new(:file => File.join(app_bundle, "Info.plist"))
+    hash = CFPropertyList.native_types(plist.value)
+    hash["CFBundleVersion"]
+    #hash["CFBundleShortVersionString"]
+end
+
 def app_bundle_id(app_bundle)
     plist = CFPropertyList::List.new(:file => File.join(app_bundle, "Info.plist"))
     hash = CFPropertyList.native_types(plist.value)
@@ -457,6 +502,15 @@ def simulator_path
     "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Applications/iPhone\\ Simulator.app/Contents/MacOS/iPhone\\ Simulator"
 end
 
+def run_instruments(udid, app_path, script_path)
+    output = nil
+    File.open("#{Dir.tmpdir}/testautoi.lock", 'w') { |f|
+        f.flock(File::LOCK_EX)
+        output = `instruments -w #{udid} -t #{tracetemplate} #{app_path} -e UIASCRIPT #{script_path}`
+    }
+    output
+end
+
 def launch_app(app_url)
     udid = @settings["device_udid"].to_s
     udids = Device.detect
@@ -471,7 +525,7 @@ def launch_app(app_url)
     text = File.read(File.join(File.dirname(__FILE__), script))
     File.open(File.join(FileUtils.pwd, script), "w") {|file| file.puts text.gsub(/\[%app%\]/, app_url)}
     script = File.join(FileUtils.pwd, script)
-    cmd = `instruments -w #{udid} -t #{tracetemplate} #{launcher_path} -e UIASCRIPT #{script}`
+    run_instruments(udid, launcher_path, script)
 end
 
 def get_device_ip
@@ -490,7 +544,7 @@ def get_device_ip
     File.open(File.join(FileUtils.pwd, script), "w") {|file| file.puts text}
     script = File.join(FileUtils.pwd, script)
     File.open(File.join(FileUtils.pwd, "Device.cfg"), "w") {|file| file.puts "IPAddress="}
-    cmd = `instruments -w #{udid} -t #{tracetemplate} #{launcher_path} -e UIASCRIPT #{script}`
+    run_instruments(udid, launcher_path, script)
     puts File.read(File.join(FileUtils.pwd, "Device.cfg"))
 end
 
@@ -671,7 +725,7 @@ elsif cmd == 'getbuild'
 
 elsif cmd == 'getscript'
     read_settings
-    get_script
+    get_script(ARGV.shift)
     exit 0
 
 elsif cmd == 'getsource'
@@ -742,7 +796,7 @@ elsif cmd == 'sim'
         sim_add_photo(file)        
     end
     exit 0
-
+    
 elsif cmd == 'run' or cmd == 'console'
     read_settings
     run(cmd)
@@ -759,6 +813,11 @@ elsif cmd == 'gen'
 elsif cmd == 'go'
     go
     
+elsif cmd == 'uia'
+    read_settings
+    script_path = ARGV.shift
+    puts run_instruments(@settings["device_udid"].to_s, @settings["app_bundle"], script_path)
+
 elsif cmd == 'record'
     read_settings
     option = ARGV.shift

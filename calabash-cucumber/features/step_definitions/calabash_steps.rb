@@ -120,18 +120,17 @@ end
 
 Then /^I type "([^\"]*)" into the "([^\"]*)" (?:text|input) field$/ do |text_to_type, field_name|
   tap(field_name)
-  wait_for_elements_exist( ["keyboardAutomatic"] )
+  await_keyboard()
+  sleep(STEP_PAUSE)
   keyboard_enter_text(text_to_type)
   sleep(STEP_PAUSE)
 end
 
 Then /^I type "([^\"]*)" into (?:input|text) field number (\d+)$/ do |text_to_type, index|
-    index = index.to_i
-    screenshot_and_raise "Index should be positive (was: #{index})" if (index<=0)    
-    touch("textField index:#{index-1}")
-    wait_for_elements_exist( ["keyboardAutomatic"] )
-    keyboard_enter_text(text_to_type)
-    sleep(STEP_PAUSE)
+  macro %Q|I touch text field number #{index}|
+  await_keyboard()
+  keyboard_enter_text(text_to_type)
+  sleep(STEP_PAUSE)
 end
 
 # alias

@@ -25,6 +25,8 @@ end
 def calabash_setup(args)
   puts "Checking if Xcode is running..."
   res = `ps x -o pid,command | grep -v grep | grep Contents/MacOS/Xcode`
+  puts "Skip checking"
+  res = ""
   if res==""
     puts "Xcode not running."
     project_name, project_path, xpath = find_project_files(args)
